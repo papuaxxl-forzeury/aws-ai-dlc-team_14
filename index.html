@@ -171,7 +171,14 @@ let frozen = false;
 
 let player, scoreLabel, multLabel, timerLabel, timeUpLabel;
 let containers = [];
+let worldObjects = []; // every non-container object added by buildWorld; torn down on restart
 let shake = 0;
+
+function spawnWorld(comps) {
+  const o = add(comps);
+  worldObjects.push(o);
+  return o;
+}
 
 // ---- Audio (tiny generated tones, no external files) ------------------
 let audioCtx = null;
@@ -197,25 +204,27 @@ function beep(freq, duration, type = 'sine', gain = 0.12) {
 function buildWorld() {
   containers.forEach((c) => c.destroy && c.destroy());
   containers = [];
+  worldObjects.forEach((o) => o.destroy && o.exists() && o.destroy());
+  worldObjects = [];
   carried = null;
 
   // Dock (gray) covers the left half; the "water" is the kaplay background.
-  add([rect(DOCK_W, 600), pos(0, 0), color(90, 92, 96), z(0)]);
+  spawnWorld([rect(DOCK_W, 600), pos(0, 0), color(90, 92, 96), z(0)]);
 
   // Ship on the dock's left edge.
-  add([rect(SHIP.w, SHIP.h), pos(SHIP.x, SHIP.y), color(55, 58, 64), outline(3, rgb(20, 20, 24)), z(1)]);
+  spawnWorld([rect(SHIP.w, SHIP.h), pos(SHIP.x, SHIP.y), color(55, 58, 64), outline(3, rgb(20, 20, 24)), z(1)]);
 
   // Cargo plane on the right edge (over water).
-  add([rect(PLANE.w, PLANE.h), pos(PLANE.x, PLANE.y), color(205, 210, 215), outline(3, rgb(140, 145, 150)), z(1)]);
-  add([text('PLANE', { size: 14 }), pos(PLANE.x + PLANE.w / 2, PLANE.y + PLANE.h / 2), anchor('center'), color(40, 40, 40), z(2)]);
+  spawnWorld([rect(PLANE.w, PLANE.h), pos(PLANE.x, PLANE.y), color(205, 210, 215), outline(3, rgb(140, 145, 150)), z(1)]);
+  spawnWorld([text('PLANE', { size: 14 }), pos(PLANE.x + PLANE.w / 2, PLANE.y + PLANE.h / 2), anchor('center'), color(40, 40, 40), z(2)]);
 
   // Delivery truck at the bottom.
-  add([rect(TRUCK.w, TRUCK.h), pos(TRUCK.x, TRUCK.y), color(40, 160, 70), outline(3, rgb(20, 90, 40)), z(1)]);
-  add([text('TRUCK', { size: 14 }), pos(TRUCK.x + TRUCK.w / 2, TRUCK.y + TRUCK.h / 2), anchor('center'), color(10, 40, 10), z(2)]);
+  spawnWorld([rect(TRUCK.w, TRUCK.h), pos(TRUCK.x, TRUCK.y), color(40, 160, 70), outline(3, rgb(20, 90, 40)), z(1)]);
+  spawnWorld([text('TRUCK', { size: 14 }), pos(TRUCK.x + TRUCK.w / 2, TRUCK.y + TRUCK.h / 2), anchor('center'), color(10, 40, 10), z(2)]);
 
   for (let i = 0; i < 3; i++) spawnContainer();
 
-  player = add([
+  player = spawnWorld([
     rect(32, 32),
     pos(DOCK_W + 200, 300),
     anchor('center'),
@@ -227,10 +236,10 @@ function buildWorld() {
     'player',
   ]);
 
-  scoreLabel = add([text('Score: 0', { size: 22 }), pos(16, 12), color(255, 255, 255), z(10)]);
-  multLabel = add([text('x1', { size: 34 }), pos(16, 42), color(255, 220, 80), z(10)]);
-  timerLabel = add([text('60', { size: 24 }), pos(740, 12), anchor('topright'), color(255, 255, 255), z(10)]);
-  timeUpLabel = add([text('', { size: 48 }), pos(400, 300), anchor('center'), color(255, 60, 60), z(20)]);
+  scoreLabel = spawnWorld([text('Score: 0', { size: 22 }), pos(16, 12), color(255, 255, 255), z(10)]);
+  multLabel = spawnWorld([text('x1', { size: 34 }), pos(16, 42), color(255, 220, 80), z(10)]);
+  timerLabel = spawnWorld([text('60', { size: 24 }), pos(740, 12), anchor('topright'), color(255, 255, 255), z(10)]);
+  timeUpLabel = spawnWorld([text('', { size: 48 }), pos(400, 300), anchor('center'), color(255, 60, 60), z(20)]);
 }
 
 function spawnContainer() {
@@ -254,23 +263,24 @@ function spawnContainer() {
     },
   ]);
   if (isExpress) {
-    add([
+    spawnWorld([
       text('X2', { size: 10 }),
       pos(x, y - 20),
       anchor('center'),
       color(255, 230, 230),
       z(4),
-      follow(c),
+      followContainer(c),
     ]);
   }
   containers.push(c);
   return c;
 }
 
-// small helper component: keeps a label glued to a container that may be destroyed
-function follow(target) {
+// local helper component (distinct name from kaplay's built-in `follow`):
+// keeps a label glued to a container that may be destroyed independently.
+function followContainer(target) {
   return {
-    id: 'follow',
+    id: 'followContainer',
     update() {
       if (!target.exists()) {
         this.destroy();
@@ -371,7 +381,10 @@ function expireContainer(c) {
     carried = null;
     multiplier = 1;
     multLabel.text = 'x1';
-    lastDeliveryAt = time(); // restart the combo clock cleanly
+    // Breaking the combo means forfeiting the window, not starting a fresh
+    // one: null (not time()) so the next real delivery can't be mistaken
+    // for a continuation of a combo that just failed.
+    lastDeliveryAt = null;
   }
   spawnContainer();
 }
@@ -466,11 +479,16 @@ onKeyPress('space', () => {
   }
 });
 
-onKeyPress('r', () => {
+// Listen at the document level (not kaplay's canvas-only key handler) so
+// restart works regardless of where focus is, while still letting the
+// player type an "r" into the name field without triggering it.
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'r' && event.key !== 'R') return;
+  if (!gameOver) return;
   const active = document.activeElement;
   const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-  if (typing) return;
-  if (gameOver) startGame();
+  if (typing) return; // let the player type an "r" into their name
+  startGame();
 });
 
 // ---- Overlay / server-backed high scores -------------------------------
@@ -514,7 +532,9 @@ function showOverlay() {
   nameInput.value = '';
   overlay.style.display = 'flex';
   refreshLeaderboard();
-  nameInput.focus();
+  // Deliberately not auto-focusing nameInput: the panel advertises
+  // "Press R to restart" immediately, and stealing focus into the text
+  // field would make that keyboard shortcut unreachable without a click.
 }
 
 function hideOverlay() {
