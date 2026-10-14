@@ -1,13 +1,14 @@
 {
-  "name": "dockyard-dash",
+  "name": "neon-dockyard-dash",
   "version": "1.0.0",
-  "description": "Dockyard Dash - a top-down forklift cargo delivery game with a persistent high-score table",
+  "description": "Neon Dockyard Dash - route color-coded cargo to matching depots",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "kaplay": "3001.0.19"
   }
 }

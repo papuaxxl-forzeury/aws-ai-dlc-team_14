@@ -1,8 +1,8 @@
-# Dockyard Dash
+# Neon Dockyard Dash
 
-A compact, one-mechanic top-down browser game: drive a forklift between a
-docked ship, a cargo plane, and a delivery truck, racing the clock to turn
-containers into score before time runs out.
+A neon top-down browser game: drive a forklift between a docked ship, cargo
+plane, and detailed delivery truck, racing the clock to route containers
+before time runs out.
 
 ## Run it
 
@@ -23,8 +23,9 @@ To use a different port: `PORT=8080 npm start`.
 - **Move**: WASD or the arrow keys, 8-directional, clamped to the canvas.
 - **SPACE** near a container on the ship picks it up (you can only carry
   one at a time — it rides visibly on top of the forklift).
-- **SPACE** again while overlapping the cargo plane or the delivery truck
-  delivers it.
+- Each container is marked **AIR ▲** (cyan) or **ROAD ■** (magenta).
+- **SPACE** again while overlapping the matching plane or truck depot delivers
+  it. A wrong depot rejects the cargo without scoring or removing it.
 - You have 60 seconds. Each delivery adds time back (+3s normal, +1s for
   an express container) — the clock turns red under 10 seconds, and
   freezes the forklift and shows "TIME UP" at zero.
@@ -33,8 +34,8 @@ To use a different port: `PORT=8080 npm start`.
 
 Every point comes from an actual delivery — nothing else awards score:
 
-- A normal (brown) delivery is worth `100 × multiplier`.
-- An **express** (red, labeled "x2") container is worth `200 × multiplier`,
+- A normal delivery is worth `100 × multiplier`.
+- An **express** container has a yellow outline and `X2` label. It is worth `200 × multiplier`,
   but only adds 1 second to the clock, and vanishes — breaking your combo —
   if it isn't delivered within 8 seconds of being picked up (or spawning,
   if never picked up). Roughly 1 in 3 spawned containers are express.
@@ -76,8 +77,9 @@ double-click, while still allowing a deliberate resubmission.
 
 - Single `index.html`: the game, rendering, input, juice, and HTML
   overlay (game-over panel, name form, leaderboard) in one file, using
-  [Kaplay](https://kaplayjs.com/) loaded from the unpkg CDN as requested.
-  All game shapes are plain colored rectangles — no image/audio assets.
+  the locally installed [Kaplay](https://kaplayjs.com/) browser bundle.
+  The environment and vehicle art are assembled from lightweight canvas shapes,
+  so there are no image/audio assets to download.
 - `server.js`: a small Express app that serves this static directory and
   exposes the `/scores` API described above, backed by `scores.json`.
 - Reserved for a later optional change: additional stages/levels, new
