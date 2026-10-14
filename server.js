@@ -1,4 +1,4 @@
-// Dockyard Dash game server: serves the static game page and the
+// Neon Dockyard Dash game server: serves the static game page and the
 // durable high-score API backing it. Scores live in a JSON file on
 // disk (scores.json) so they survive a process restart.
 const express = require('express');
@@ -93,5 +93,5 @@ app.post('/scores', (req, res) => {
 });
 
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Dockyard Dash listening on http://127.0.0.1:${PORT}`);
+  console.log(`Neon Dockyard Dash listening on http://127.0.0.1:${PORT}`);
 });

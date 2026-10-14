@@ -2,46 +2,60 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Dockyard Dash</title>
+<title>Neon Dockyard Dash</title>
 <style>
+  :root {
+    --ink: #f4fbff;
+    --panel: #071626;
+    --cyan: #28e7ff;
+    --magenta: #ff3eb5;
+    --yellow: #ffe66d;
+  }
   html, body {
     margin: 0;
-    background: #061018;
+    background:
+      radial-gradient(circle at 50% 30%, #13264a 0, #06101d 45%, #02060d 100%);
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
     font-family: 'Segoe UI', Arial, sans-serif;
-    color: #eef;
+    color: var(--ink);
+    overflow: hidden;
   }
   #stage {
     position: relative;
-    width: 800px;
-    height: 600px;
+    width: min(800px, 100vw, 133.333vh);
+    aspect-ratio: 4 / 3;
+    box-shadow: 0 0 48px rgba(40, 231, 255, 0.18);
   }
   #stage canvas {
     display: block;
+    width: 100%;
+    height: 100%;
   }
   #overlay {
     position: absolute;
     inset: 0;
+    z-index: 30;
     display: none;
     align-items: center;
     justify-content: center;
     background: rgba(2, 6, 14, 0.72);
   }
   #panel {
-    background: #0c1b2b;
-    border: 2px solid #2fd0ff;
-    border-radius: 10px;
+    background: linear-gradient(145deg, rgba(9, 26, 46, 0.98), rgba(5, 12, 26, 0.98));
+    border: 2px solid var(--cyan);
+    border-radius: 12px;
     padding: 24px 32px;
-    width: 360px;
+    width: min(360px, calc(100% - 32px));
+    box-sizing: border-box;
     text-align: center;
-    box-shadow: 0 0 30px rgba(47, 208, 255, 0.35);
+    box-shadow: 0 0 30px rgba(40, 231, 255, 0.35), inset 0 0 24px rgba(255, 62, 181, 0.08);
   }
   #panel h1 {
     margin: 0 0 8px;
-    color: #ffd54a;
+    color: var(--yellow);
     font-size: 26px;
     letter-spacing: 1px;
   }
@@ -62,7 +76,7 @@
     flex: 1;
     padding: 7px 8px;
     border-radius: 6px;
-    border: 1px solid #2fd0ff;
+    border: 1px solid var(--cyan);
     background: #06121f;
     color: #fff;
     font-size: 14px;
@@ -71,7 +85,7 @@
     padding: 7px 12px;
     border-radius: 6px;
     border: none;
-    background: #2fd0ff;
+    background: var(--cyan);
     color: #06121f;
     font-weight: bold;
     cursor: pointer;
@@ -79,6 +93,11 @@
   #saveBtn:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+  #nameInput:focus-visible,
+  #saveBtn:focus-visible {
+    outline: 3px solid var(--yellow);
+    outline-offset: 2px;
   }
   #saveStatus {
     min-height: 18px;
@@ -105,7 +124,7 @@
 </style>
 </head>
 <body>
-<div id="stage">
+<div id="stage" role="application" aria-label="Neon Dockyard Dash cargo routing game">
   <div id="overlay">
     <div id="panel">
       <h1>TIME UP</h1>
@@ -126,14 +145,14 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/kaplay@3000/dist/kaplay.js"></script>
+<script src="node_modules/kaplay/dist/kaplay.js"></script>
 <script>
 /*
- * Dockyard Dash
- * -------------
+ * Neon Dockyard Dash
+ * ------------------
  * Top-down forklift cargo game. You drive a yellow forklift around a
- * dockyard: pick up containers from the ship, race them to the plane
- * or the truck, and deliver before the clock runs out. Chaining
+ * dockyard: pick up AIR or ROAD containers from the ship, then take
+ * each to its matching plane or truck. Chaining
  * deliveries quickly builds a combo multiplier (up to x5); express
  * (red) containers are worth double but expire fast and punish you
  * for sitting on them. All scoring happens through real deliveries -
@@ -143,8 +162,10 @@
 const k = kaplay({
   width: 800,
   height: 600,
+  root: document.getElementById('stage'),
   background: [10, 22, 46],
   letterbox: true,
+  stretch: true,
   global: true,
 });
 
@@ -152,7 +173,11 @@ const k = kaplay({
 const DOCK_W = 400;
 const SHIP = { x: 10, y: 60, w: 150, h: 480 };
 const PLANE = { x: 650, y: 40, w: 140, h: 200 };
-const TRUCK = { x: 330, y: 500, w: 140, h: 80 };
+const ROAD = { x: 165, y: 462, w: 635, h: 138 };
+const WAREHOUSE = { x: 185, y: 276, w: 190, h: 118 };
+const APRON = { x: 175, y: 394, w: 210, h: 54 };
+const TRUCK = { x: 515, y: 486, w: 220, h: 88 };
+const TITLE_CENTER_X = 404; // optical +4px nudge balances the spaced title
 const PLAYER_SPEED = 220;
 const ROUND_SECONDS = 60;
 const COMBO_WINDOW = 5; // seconds between deliveries to keep combo
@@ -169,7 +194,7 @@ let carried = null; // the container game-obj currently riding the forklift, or 
 let gameOver = false;
 let frozen = false;
 
-let player, scoreLabel, multLabel, timerLabel, timeUpLabel;
+let player, scoreLabel, multLabel, timerLabel, timeUpLabel, actionLabel, cargoLabel;
 let containers = [];
 let worldObjects = []; // every non-container object added by buildWorld; torn down on restart
 let shake = 0;
@@ -208,72 +233,149 @@ function buildWorld() {
   worldObjects = [];
   carried = null;
 
-  // Dock (gray) covers the left half; the "water" is the kaplay background.
-  spawnWorld([rect(DOCK_W, 600), pos(0, 0), color(90, 92, 96), z(0)]);
+  // Concrete dock and dark water, edged with neon safety lighting.
+  spawnWorld([rect(DOCK_W, 600), pos(0, 0), color(41, 48, 64), z(0)]);
+  spawnWorld([rect(400, 600), pos(400, 0), color(6, 25, 48), z(0)]);
+  for (let y = 0; y < 600; y += 42) {
+    spawnWorld([rect(4, 20), pos(397, y), color(40, 231, 255), opacity(0.8), z(1)]);
+  }
 
   // Ship on the dock's left edge.
-  spawnWorld([rect(SHIP.w, SHIP.h), pos(SHIP.x, SHIP.y), color(55, 58, 64), outline(3, rgb(20, 20, 24)), z(1)]);
+  spawnWorld([rect(SHIP.w, SHIP.h, { radius: 8 }), pos(SHIP.x, SHIP.y), color(36, 43, 58), outline(3, rgb(255, 62, 181)), z(1)]);
+  spawnWorld([text('CARGO DECK', { size: 11 }), pos(SHIP.x + SHIP.w / 2, SHIP.y + 8), anchor('top'), color(255, 160, 221), z(2)]);
 
-  // Cargo plane on the right edge (over water).
-  spawnWorld([rect(PLANE.w, PLANE.h), pos(PLANE.x, PLANE.y), color(205, 210, 215), outline(3, rgb(140, 145, 150)), z(1)]);
-  spawnWorld([text('PLANE', { size: 14 }), pos(PLANE.x + PLANE.w / 2, PLANE.y + PLANE.h / 2), anchor('center'), color(40, 40, 40), z(2)]);
+  // Plane delivery zone.
+  spawnWorld([rect(PLANE.w, PLANE.h, { radius: 10 }), pos(PLANE.x, PLANE.y), color(20, 50, 76), outline(3, rgb(40, 231, 255)), opacity(0.92), z(1)]);
+  spawnWorld([rect(22, 152, { radius: 10 }), pos(PLANE.x + 59, PLANE.y + 24), color(221, 239, 245), z(2)]);
+  spawnWorld([rect(112, 24, { radius: 8 }), pos(PLANE.x + 14, PLANE.y + 82), color(195, 223, 235), z(2)]);
+  spawnWorld([text('AIR DEPOT', { size: 12 }), pos(PLANE.x + PLANE.w / 2, PLANE.y + 178), anchor('center'), color(40, 231, 255), z(3)]);
 
-  // Delivery truck at the bottom.
-  spawnWorld([rect(TRUCK.w, TRUCK.h), pos(TRUCK.x, TRUCK.y), color(40, 160, 70), outline(3, rgb(20, 90, 40)), z(1)]);
-  spawnWorld([text('TRUCK', { size: 14 }), pos(TRUCK.x + TRUCK.w / 2, TRUCK.y + TRUCK.h / 2), anchor('center'), color(10, 40, 10), z(2)]);
+  // Warehouse and its loading apron stop above the road with a visible gap.
+  spawnWorld([rect(WAREHOUSE.w, WAREHOUSE.h), pos(WAREHOUSE.x, WAREHOUSE.y), color(20, 31, 50), outline(3, rgb(255, 62, 181)), z(1)]);
+  spawnWorld([rect(APRON.w, APRON.h), pos(APRON.x, APRON.y), color(58, 65, 80), outline(2, rgb(128, 90, 126)), z(1)]);
+  spawnWorld([text('NEON WAREHOUSE', { size: 13 }), pos(WAREHOUSE.x + WAREHOUSE.w / 2, WAREHOUSE.y + 14), anchor('top'), color(255, 91, 191), z(2)]);
+  for (let x = WAREHOUSE.x + 18; x < WAREHOUSE.x + WAREHOUSE.w - 10; x += 52) {
+    spawnWorld([rect(38, 58), pos(x, WAREHOUSE.y + 51), color(8, 15, 28), outline(2, rgb(40, 231, 255)), z(2)]);
+  }
 
-  for (let i = 0; i < 3; i++) spawnContainer();
+  // Road begins below the apron (APRON bottom 448; ROAD top 462).
+  spawnWorld([rect(ROAD.w, ROAD.h), pos(ROAD.x, ROAD.y), color(20, 23, 34), z(0)]);
+  for (let x = ROAD.x + 12; x < 800; x += 58) {
+    spawnWorld([rect(30, 4), pos(x, ROAD.y + ROAD.h / 2), color(255, 230, 109), opacity(0.75), z(1)]);
+  }
+  spawnWorld([text('ROAD DEPOT', { size: 11 }), pos(TRUCK.x + TRUCK.w / 2, ROAD.y + 6), anchor('top'), color(255, 62, 181), z(4)]);
+  drawDeliveryTruck();
+
+  // Always introduce both routing types at the start of a round.
+  spawnContainer('air');
+  spawnContainer('road');
+  spawnContainer();
 
   player = spawnWorld([
-    rect(32, 32),
+    rect(32, 32, { radius: 4 }),
     pos(DOCK_W + 200, 300),
     anchor('center'),
-    color(240, 210, 40),
-    outline(3, rgb(150, 120, 10)),
+    color(255, 230, 109),
+    outline(3, rgb(255, 62, 181)),
     area(),
     scale(1),
     z(5),
     'player',
   ]);
 
-  scoreLabel = spawnWorld([text('Score: 0', { size: 22 }), pos(16, 12), color(255, 255, 255), z(10)]);
-  multLabel = spawnWorld([text('x1', { size: 34 }), pos(16, 42), color(255, 220, 80), z(10)]);
+  scoreLabel = spawnWorld([text('SCORE  0', { size: 20 }), pos(16, 12), color(244, 251, 255), z(10)]);
+  multLabel = spawnWorld([text('x1', { size: 32 }), pos(16, 38), color(255, 230, 109), z(10)]);
   timerLabel = spawnWorld([text('60', { size: 24 }), pos(740, 12), anchor('topright'), color(255, 255, 255), z(10)]);
   timeUpLabel = spawnWorld([text('', { size: 48 }), pos(400, 300), anchor('center'), color(255, 60, 60), z(20)]);
+  spawnWorld([text('NEON DOCKYARD DASH', { size: 20, letterSpacing: 4 }), pos(TITLE_CENTER_X, 12), anchor('top'), color(40, 231, 255), z(10)]);
+  cargoLabel = spawnWorld([text('CARGO: NONE', { size: 13 }), pos(510, 40), color(180, 197, 220), z(10)]);
+  actionLabel = spawnWorld([text('SPACE: PICK UP  •  DELIVER TO MATCHING DEPOT', { size: 12 }), pos(400, 576), anchor('bot'), color(190, 208, 230), z(10)]);
 }
 
-function spawnContainer() {
+function spawnContainer(destinationOverride) {
   const isExpress = Math.random() < EXPRESS_CHANCE;
+  const destination = destinationOverride || (Math.random() < 0.5 ? 'air' : 'road');
   const x = SHIP.x + 20 + Math.random() * (SHIP.w - 60);
   const y = SHIP.y + 20 + Math.random() * (SHIP.h - 60);
   const c = add([
     rect(26, 26),
     pos(x, y),
     anchor('center'),
-    color(isExpress ? 200 : 140, isExpress ? 40 : 90, isExpress ? 40 : 40),
-    outline(2, rgb(30, 20, 10)),
+    color(destination === 'air' ? 40 : 255, destination === 'air' ? 231 : 62, destination === 'air' ? 255 : 181),
+    outline(2, isExpress ? rgb(255, 230, 109) : rgb(7, 14, 26)),
     area(),
     scale(1),
     z(4),
     'container',
     {
       isExpress,
+      destination,
       spawnedAt: time(),
       pickedAt: null,
     },
   ]);
-  if (isExpress) {
-    spawnWorld([
-      text('X2', { size: 10 }),
-      pos(x, y - 20),
-      anchor('center'),
-      color(255, 230, 230),
-      z(4),
-      followContainer(c),
-    ]);
-  }
+  spawnWorld([
+    text(`${destination === 'air' ? 'AIR ▲' : 'ROAD ■'}${isExpress ? ' X2' : ''}`, { size: 9 }),
+    pos(x, y - 19),
+    anchor('center'),
+    color(destination === 'air' ? 171 : 255, destination === 'air' ? 247 : 190, destination === 'air' ? 255 : 232),
+    z(4),
+    followContainer(c),
+  ]);
   containers.push(c);
   return c;
+}
+
+function drawDeliveryTruck() {
+  // A layered side-profile truck: cargo box, angled cab/hood, glass,
+  // grille, bumper, mirror, exhaust, hubs and tyre sidewalls.
+  spawnWorld([rect(116, 58, { radius: 4 }), pos(TRUCK.x, TRUCK.y + 7), color(39, 51, 72), outline(3, rgb(255, 62, 181)), z(2)]);
+  for (let x = TRUCK.x + 13; x < TRUCK.x + 108; x += 22) {
+    spawnWorld([rect(3, 47), pos(x, TRUCK.y + 13), color(82, 63, 96), z(3)]);
+  }
+  spawnWorld([
+    pos(TRUCK.x + 114, TRUCK.y + 12),
+    z(2),
+    {
+      draw() {
+        drawPolygon({
+          pts: [vec2(0, 0), vec2(43, 0), vec2(68, 25), vec2(77, 52), vec2(0, 52)],
+          color: rgb(105, 31, 100),
+          outline: { width: 3, color: rgb(255, 62, 181) },
+        });
+      },
+    },
+  ]);
+  // Angled windshield and hood.
+  spawnWorld([
+    pos(TRUCK.x + 144, TRUCK.y + 16),
+    z(3),
+    {
+      draw() {
+        drawPolygon({
+          pts: [vec2(0, 0), vec2(13, 0), vec2(32, 20), vec2(4, 20)],
+          color: rgb(54, 210, 232),
+          outline: { width: 2, color: rgb(190, 250, 255) },
+        });
+      },
+    },
+  ]);
+  spawnWorld([rect(34, 17, { radius: 3 }), pos(TRUCK.x + 157, TRUCK.y + 40), color(141, 36, 111), outline(2, rgb(222, 91, 180)), z(3)]);
+  // Grille, bumper, mirror and exhaust.
+  spawnWorld([rect(5, 27), pos(TRUCK.x + 188, TRUCK.y + 32), color(170, 187, 202), z(4)]);
+  for (let y = TRUCK.y + 34; y < TRUCK.y + 57; y += 6) {
+    spawnWorld([rect(5, 2), pos(TRUCK.x + 188, y), color(28, 37, 50), z(5)]);
+  }
+  spawnWorld([rect(14, 5), pos(TRUCK.x + 190, TRUCK.y + 58), color(206, 218, 226), z(4)]);
+  spawnWorld([rect(7, 5, { radius: 2 }), pos(TRUCK.x + 163, TRUCK.y + 25), color(40, 231, 255), z(4)]);
+  spawnWorld([rect(4, 22), pos(TRUCK.x + 119, TRUCK.y - 7), color(174, 186, 197), z(3)]);
+  spawnWorld([rect(8, 5, { radius: 2 }), pos(TRUCK.x + 117, TRUCK.y - 10), color(208, 218, 226), z(3)]);
+  // Detailed paired wheels.
+  [TRUCK.x + 31, TRUCK.x + 91, TRUCK.x + 161].forEach((wheelX) => {
+    spawnWorld([circle(17), pos(wheelX, TRUCK.y + 66), color(7, 10, 17), outline(3, rgb(65, 77, 94)), z(4)]);
+    spawnWorld([circle(9), pos(wheelX, TRUCK.y + 66), color(151, 164, 180), outline(2, rgb(230, 239, 244)), z(5)]);
+    spawnWorld([circle(3), pos(wheelX, TRUCK.y + 66), color(28, 37, 50), z(6)]);
+  });
 }
 
 // local helper component (distinct name from kaplay's built-in `follow`):
@@ -339,11 +441,18 @@ function pickUp(container) {
   container.pickedAt = time();
   container.use(z(6));
   scalePop(container, 1.3);
-  burstParticles(container.pos.x, container.pos.y, container.isExpress ? [255, 120, 120] : [200, 150, 90]);
+  burstParticles(container.pos.x, container.pos.y, container.destination === 'air' ? [40, 231, 255] : [255, 62, 181]);
+  cargoLabel.text = `CARGO: ${container.destination === 'air' ? 'AIR ▲' : 'ROAD ■'}${container.isExpress ? '  X2' : ''}`;
+  cargoLabel.color = container.destination === 'air' ? rgb(40, 231, 255) : rgb(255, 100, 195);
+  actionLabel.text = `DELIVER TO ${container.destination === 'air' ? 'AIR DEPOT ▲' : 'ROAD DEPOT ■'}`;
   beep(420, 0.08, 'triangle', 0.1);
 }
 
-function deliver() {
+function deliver(destination) {
+  if (carried.destination !== destination) {
+    rejectDelivery(destination);
+    return false;
+  }
   const isExpress = carried.isExpress;
   const gained = (isExpress ? 200 : 100) * multiplier;
   score += gained;
@@ -370,8 +479,31 @@ function deliver() {
   carried = null;
   spawnContainer();
 
-  scoreLabel.text = `Score: ${score}`;
+  scoreLabel.text = `SCORE  ${score}`;
   multLabel.text = `x${multiplier}`;
+  cargoLabel.text = 'CARGO: NONE';
+  cargoLabel.color = rgb(180, 197, 220);
+  actionLabel.text = 'DELIVERED!  SPACE: PICK UP NEXT CARGO';
+  actionLabel.color = rgb(190, 208, 230);
+  wait(1.1, () => {
+    if (!carried && !frozen) actionLabel.text = 'SPACE: PICK UP  •  DELIVER TO MATCHING DEPOT';
+  });
+  return true;
+}
+
+function rejectDelivery(destination) {
+  const correct = carried.destination === 'air' ? 'AIR DEPOT ▲' : 'ROAD DEPOT ■';
+  const wrong = destination === 'air' ? 'AIR' : 'ROAD';
+  actionLabel.text = `WRONG DEPOT — ${wrong} REJECTED IT. GO TO ${correct}`;
+  actionLabel.color = rgb(255, 230, 109);
+  doShake(3);
+  beep(150, 0.12, 'sawtooth', 0.07);
+  wait(1.4, () => {
+    if (carried && !frozen) {
+      actionLabel.text = `DELIVER TO ${correct}`;
+      actionLabel.color = rgb(190, 208, 230);
+    }
+  });
 }
 
 function expireContainer(c) {
@@ -385,6 +517,9 @@ function expireContainer(c) {
     // one: null (not time()) so the next real delivery can't be mistaken
     // for a continuation of a combo that just failed.
     lastDeliveryAt = null;
+    cargoLabel.text = 'CARGO: NONE';
+    cargoLabel.color = rgb(180, 197, 220);
+    actionLabel.text = 'EXPRESS CARGO EXPIRED — COMBO LOST';
   }
   spawnContainer();
 }
@@ -407,8 +542,6 @@ function startGame() {
   hideOverlay();
   buildWorld();
 }
-
-startGame();
 
 onUpdate(() => {
   if (shake > 0) {
@@ -475,7 +608,11 @@ onKeyPress('space', () => {
     const px = player.pos.x, py = player.pos.y;
     const inPlane = px > PLANE.x - 10 && px < PLANE.x + PLANE.w + 10 && py > PLANE.y - 10 && py < PLANE.y + PLANE.h + 10;
     const inTruck = px > TRUCK.x - 10 && px < TRUCK.x + TRUCK.w + 10 && py > TRUCK.y - 10 && py < TRUCK.y + TRUCK.h + 10;
-    if (inPlane || inTruck) deliver();
+    if (inPlane) {
+      deliver('air');
+    } else if (inTruck) {
+      deliver('road');
+    }
   }
 });
 
@@ -560,7 +697,7 @@ scoreForm.addEventListener('submit', (event) => {
       return r.json();
     })
     .then((data) => {
-      saveStatus.textContent = `Saved! Rank #${data.rank}.`;
+      saveStatus.textContent = data.rank ? `Saved! Rank #${data.rank}.` : 'Saved outside the current top runs.';
       allTimeHighEl.textContent = data.highScore;
       renderLeaderboard(data.scores || []);
     })
@@ -569,6 +706,12 @@ scoreForm.addEventListener('submit', (event) => {
       saveBtn.disabled = false;
     });
 });
+
+// Start only after the overlay elements and their handlers above have been
+// initialized. startGame() hides the overlay immediately, so invoking it
+// earlier would access `overlay` while its `const` binding was still in the
+// temporal dead zone.
+startGame();
 </script>
 </body>
 </html>
