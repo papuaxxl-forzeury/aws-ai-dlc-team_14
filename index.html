@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Dockyard Dash</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #061018;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #eef;
+  }
+  #stage {
+    position: relative;
+    width: 800px;
+    height: 600px;
+  }
+  #stage canvas {
+    display: block;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(2, 6, 14, 0.72);
+  }
+  #panel {
+    background: #0c1b2b;
+    border: 2px solid #2fd0ff;
+    border-radius: 10px;
+    padding: 24px 32px;
+    width: 360px;
+    text-align: center;
+    box-shadow: 0 0 30px rgba(47, 208, 255, 0.35);
+  }
+  #panel h1 {
+    margin: 0 0 8px;
+    color: #ffd54a;
+    font-size: 26px;
+    letter-spacing: 1px;
+  }
+  #panel .stat {
+    margin: 4px 0;
+    font-size: 15px;
+    color: #cfe8ff;
+  }
+  #panel .stat b {
+    color: #fff;
+  }
+  #scoreForm {
+    margin-top: 14px;
+    display: flex;
+    gap: 6px;
+  }
+  #nameInput {
+    flex: 1;
+    padding: 7px 8px;
+    border-radius: 6px;
+    border: 1px solid #2fd0ff;
+    background: #06121f;
+    color: #fff;
+    font-size: 14px;
+  }
+  #saveBtn {
+    padding: 7px 12px;
+    border-radius: 6px;
+    border: none;
+    background: #2fd0ff;
+    color: #06121f;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  #saveBtn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  #saveStatus {
+    min-height: 18px;
+    font-size: 12px;
+    margin-top: 6px;
+    color: #8fe0ff;
+  }
+  #leaderboard {
+    margin-top: 14px;
+    text-align: left;
+    font-size: 13px;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  #leaderboard ol {
+    margin: 4px 0 0;
+    padding-left: 20px;
+  }
+  #restartHint {
+    margin-top: 14px;
+    font-size: 13px;
+    color: #9fd;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="overlay">
+    <div id="panel">
+      <h1>TIME UP</h1>
+      <div class="stat">Final score: <b id="finalScore">0</b></div>
+      <div class="stat">Best combo reached: <b id="finalCombo">x1</b></div>
+      <div class="stat">All-time high score: <b id="allTimeHigh">-</b></div>
+      <form id="scoreForm" autocomplete="off">
+        <input id="nameInput" name="name" maxlength="20" placeholder="Your name" required />
+        <button id="saveBtn" type="submit">Save Score</button>
+      </form>
+      <div id="saveStatus"></div>
+      <div id="leaderboard">
+        <div>Top runs</div>
+        <ol id="leaderboardList"></ol>
+      </div>
+      <div id="restartHint">Press R to restart</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/kaplay@3000/dist/kaplay.js"></script>
+<script>
+/*
+ * Dockyard Dash
+ * -------------
+ * Top-down forklift cargo game. You drive a yellow forklift around a
+ * dockyard: pick up containers from the ship, race them to the plane
+ * or the truck, and deliver before the clock runs out. Chaining
+ * deliveries quickly builds a combo multiplier (up to x5); express
+ * (red) containers are worth double but expire fast and punish you
+ * for sitting on them. All scoring happens through real deliveries -
+ * nothing else awards points.
+ */
+
+const k = kaplay({
+  width: 800,
+  height: 600,
+  background: [10, 22, 46],
+  letterbox: true,
+  global: true,
+});
+
+// ---- Layout constants -----------------------------------------------
+const DOCK_W = 400;
+const SHIP = { x: 10, y: 60, w: 150, h: 480 };
+const PLANE = { x: 650, y: 40, w: 140, h: 200 };
+const TRUCK = { x: 330, y: 500, w: 140, h: 80 };
+const PLAYER_SPEED = 220;
+const ROUND_SECONDS = 60;
+const COMBO_WINDOW = 5; // seconds between deliveries to keep combo
+const EXPRESS_EXPIRE = 8; // seconds before an unclaimed/undelivered express container vanishes
+const EXPRESS_CHANCE = 1 / 3;
+
+// ---- Persistent-across-restart world state ---------------------------
+let score = 0;
+let multiplier = 1;
+let comboHigh = 1;
+let timeLeft = ROUND_SECONDS;
+let lastDeliveryAt = null;
+let carried = null; // the container game-obj currently riding the forklift, or null
+let gameOver = false;
+let frozen = false;
+
+let player, scoreLabel, multLabel, timerLabel, timeUpLabel;
+let containers = [];
+let shake = 0;
+
+// ---- Audio (tiny generated tones, no external files) ------------------
+let audioCtx = null;
+function beep(freq, duration, type = 'sine', gain = 0.12) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    g.gain.value = gain;
+    osc.connect(g);
+    g.connect(audioCtx.destination);
+    osc.start();
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.stop(audioCtx.currentTime + duration);
+  } catch (e) {
+    // audio is a nicety; ignore if the browser blocks it before a gesture
+  }
+}
+
+// ---- Scene -------------------------------------------------------------
+function buildWorld() {
+  containers.forEach((c) => c.destroy && c.destroy());
+  containers = [];
+  carried = null;
+
+  // Dock (gray) covers the left half; the "water" is the kaplay background.
+  add([rect(DOCK_W, 600), pos(0, 0), color(90, 92, 96), z(0)]);
+
+  // Ship on the dock's left edge.
+  add([rect(SHIP.w, SHIP.h), pos(SHIP.x, SHIP.y), color(55, 58, 64), outline(3, rgb(20, 20, 24)), z(1)]);
+
+  // Cargo plane on the right edge (over water).
+  add([rect(PLANE.w, PLANE.h), pos(PLANE.x, PLANE.y), color(205, 210, 215), outline(3, rgb(140, 145, 150)), z(1)]);
+  add([text('PLANE', { size: 14 }), pos(PLANE.x + PLANE.w / 2, PLANE.y + PLANE.h / 2), anchor('center'), color(40, 40, 40), z(2)]);
+
+  // Delivery truck at the bottom.
+  add([rect(TRUCK.w, TRUCK.h), pos(TRUCK.x, TRUCK.y), color(40, 160, 70), outline(3, rgb(20, 90, 40)), z(1)]);
+  add([text('TRUCK', { size: 14 }), pos(TRUCK.x + TRUCK.w / 2, TRUCK.y + TRUCK.h / 2), anchor('center'), color(10, 40, 10), z(2)]);
+
+  for (let i = 0; i < 3; i++) spawnContainer();
+
+  player = add([
+    rect(32, 32),
+    pos(DOCK_W + 200, 300),
+    anchor('center'),
+    color(240, 210, 40),
+    outline(3, rgb(150, 120, 10)),
+    area(),
+    scale(1),
+    z(5),
+    'player',
+  ]);
+
+  scoreLabel = add([text('Score: 0', { size: 22 }), pos(16, 12), color(255, 255, 255), z(10)]);
+  multLabel = add([text('x1', { size: 34 }), pos(16, 42), color(255, 220, 80), z(10)]);
+  timerLabel = add([text('60', { size: 24 }), pos(740, 12), anchor('topright'), color(255, 255, 255), z(10)]);
+  timeUpLabel = add([text('', { size: 48 }), pos(400, 300), anchor('center'), color(255, 60, 60), z(20)]);
+}
+
+function spawnContainer() {
+  const isExpress = Math.random() < EXPRESS_CHANCE;
+  const x = SHIP.x + 20 + Math.random() * (SHIP.w - 60);
+  const y = SHIP.y + 20 + Math.random() * (SHIP.h - 60);
+  const c = add([
+    rect(26, 26),
+    pos(x, y),
+    anchor('center'),
+    color(isExpress ? 200 : 140, isExpress ? 40 : 90, isExpress ? 40 : 40),
+    outline(2, rgb(30, 20, 10)),
+    area(),
+    scale(1),
+    z(4),
+    'container',
+    {
+      isExpress,
+      spawnedAt: time(),
+      pickedAt: null,
+    },
+  ]);
+  if (isExpress) {
+    add([
+      text('X2', { size: 10 }),
+      pos(x, y - 20),
+      anchor('center'),
+      color(255, 230, 230),
+      z(4),
+      follow(c),
+    ]);
+  }
+  containers.push(c);
+  return c;
+}
+
+// small helper component: keeps a label glued to a container that may be destroyed
+function follow(target) {
+  return {
+    id: 'follow',
+    update() {
+      if (!target.exists()) {
+        this.destroy();
+        return;
+      }
+      this.pos = vec2(target.pos.x, target.pos.y - 20);
+    },
+  };
+}
+
+function burstParticles(x, y, col) {
+  for (let i = 0; i < 6; i++) {
+    const p = add([
+      rect(5, 5),
+      pos(x, y),
+      anchor('center'),
+      color(col[0], col[1], col[2]),
+      z(6),
+      lifespan(0.4, { fade: 0.2 }),
+      {
+        vel: vec2((Math.random() - 0.5) * 220, (Math.random() - 0.5) * 220),
+      },
+    ]);
+    p.onUpdate(() => {
+      p.pos = p.pos.add(p.vel.scale(dt()));
+    });
+  }
+}
+
+function scalePop(obj, peak = 1.4) {
+  obj.scale = vec2(peak, peak);
+  tween(obj.scale, vec2(1, 1), 0.18, (v) => (obj.scale = v));
+}
+
+function flashScore() {
+  scoreLabel.color = rgb(120, 255, 160);
+  wait(0.18, () => (scoreLabel.color = rgb(255, 255, 255)));
+}
+
+function flashCombo() {
+  multLabel.scale = vec2(1.9, 1.9);
+  tween(multLabel.scale, vec2(1, 1), 0.25, (v) => (multLabel.scale = v));
+}
+
+function doShake(amount) {
+  shake = Math.max(shake, amount);
+}
+
+function clampPlayer() {
+  player.pos.x = Math.max(16, Math.min(784, player.pos.x));
+  player.pos.y = Math.max(16, Math.min(584, player.pos.y));
+}
+
+function pickUp(container) {
+  carried = container;
+  container.pickedAt = time();
+  container.use(z(6));
+  scalePop(container, 1.3);
+  burstParticles(container.pos.x, container.pos.y, container.isExpress ? [255, 120, 120] : [200, 150, 90]);
+  beep(420, 0.08, 'triangle', 0.1);
+}
+
+function deliver() {
+  const isExpress = carried.isExpress;
+  const gained = (isExpress ? 200 : 100) * multiplier;
+  score += gained;
+  flashScore();
+
+  const now = time();
+  if (lastDeliveryAt !== null && now - lastDeliveryAt <= COMBO_WINDOW) {
+    multiplier = Math.min(5, multiplier + 1);
+    flashCombo();
+  } else if (lastDeliveryAt !== null) {
+    multiplier = 1;
+  }
+  lastDeliveryAt = now;
+  comboHigh = Math.max(comboHigh, multiplier);
+
+  timeLeft = Math.min(ROUND_SECONDS + 30, timeLeft + (isExpress ? 1 : 3));
+
+  burstParticles(player.pos.x, player.pos.y, isExpress ? [255, 120, 120] : [120, 220, 255]);
+  doShake(isExpress ? 10 : 5);
+  beep(760, 0.1, 'square', 0.1);
+
+  containers = containers.filter((c) => c !== carried);
+  carried.destroy();
+  carried = null;
+  spawnContainer();
+
+  scoreLabel.text = `Score: ${score}`;
+  multLabel.text = `x${multiplier}`;
+}
+
+function expireContainer(c) {
+  containers = containers.filter((x) => x !== c);
+  c.destroy();
+  if (carried === c) {
+    carried = null;
+    multiplier = 1;
+    multLabel.text = 'x1';
+    lastDeliveryAt = time(); // restart the combo clock cleanly
+  }
+  spawnContainer();
+}
+
+function endGame() {
+  gameOver = true;
+  frozen = true;
+  timeUpLabel.text = 'TIME UP';
+  showOverlay();
+}
+
+function startGame() {
+  score = 0;
+  multiplier = 1;
+  comboHigh = 1;
+  timeLeft = ROUND_SECONDS;
+  lastDeliveryAt = null;
+  gameOver = false;
+  frozen = false;
+  hideOverlay();
+  buildWorld();
+}
+
+startGame();
+
+onUpdate(() => {
+  if (shake > 0) {
+    camPos(vec2(400 + (Math.random() - 0.5) * shake, 300 + (Math.random() - 0.5) * shake));
+    shake = Math.max(0, shake - dt() * 40);
+    if (shake <= 0) camPos(vec2(400, 300));
+  }
+
+  if (frozen) return;
+
+  // Movement, 8-directional, clamped to canvas.
+  let dx = 0, dy = 0;
+  if (isKeyDown('left') || isKeyDown('a')) dx -= 1;
+  if (isKeyDown('right') || isKeyDown('d')) dx += 1;
+  if (isKeyDown('up') || isKeyDown('w')) dy -= 1;
+  if (isKeyDown('down') || isKeyDown('s')) dy += 1;
+  if (dx !== 0 || dy !== 0) {
+    const len = Math.sqrt(dx * dx + dy * dy);
+    player.pos.x += (dx / len) * PLAYER_SPEED * dt();
+    player.pos.y += (dy / len) * PLAYER_SPEED * dt();
+    clampPlayer();
+  }
+  if (carried) {
+    carried.pos = vec2(player.pos.x, player.pos.y - 26);
+  }
+
+  // Timer
+  timeLeft -= dt();
+  if (timeLeft <= 0) {
+    timeLeft = 0;
+    timerLabel.text = '0';
+    endGame();
+    return;
+  }
+  timerLabel.text = `${Math.ceil(timeLeft)}`;
+  timerLabel.color = timeLeft < 10 ? rgb(255, 70, 70) : rgb(255, 255, 255);
+
+  // Combo decay if too long since last delivery.
+  if (lastDeliveryAt !== null && multiplier > 1 && time() - lastDeliveryAt > COMBO_WINDOW) {
+    multiplier = 1;
+    multLabel.text = 'x1';
+  }
+
+  // Express expiry.
+  for (const c of containers.slice()) {
+    if (c.isExpress && c.pickedAt === null && time() - c.spawnedAt > EXPRESS_EXPIRE) {
+      expireContainer(c);
+    } else if (c.isExpress && c.pickedAt !== null && time() - c.pickedAt > EXPRESS_EXPIRE) {
+      expireContainer(c);
+    }
+  }
+});
+
+onKeyPress('space', () => {
+  if (frozen) return;
+  if (!carried) {
+    for (const c of containers) {
+      if (c.pickedAt === null && player.pos.dist(c.pos) < 34) {
+        pickUp(c);
+        return;
+      }
+    }
+  } else {
+    const px = player.pos.x, py = player.pos.y;
+    const inPlane = px > PLANE.x - 10 && px < PLANE.x + PLANE.w + 10 && py > PLANE.y - 10 && py < PLANE.y + PLANE.h + 10;
+    const inTruck = px > TRUCK.x - 10 && px < TRUCK.x + TRUCK.w + 10 && py > TRUCK.y - 10 && py < TRUCK.y + TRUCK.h + 10;
+    if (inPlane || inTruck) deliver();
+  }
+});
+
+onKeyPress('r', () => {
+  const active = document.activeElement;
+  const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+  if (typing) return;
+  if (gameOver) startGame();
+});
+
+// ---- Overlay / server-backed high scores -------------------------------
+const overlay = document.getElementById('overlay');
+const finalScoreEl = document.getElementById('finalScore');
+const finalComboEl = document.getElementById('finalCombo');
+const allTimeHighEl = document.getElementById('allTimeHigh');
+const scoreForm = document.getElementById('scoreForm');
+const nameInput = document.getElementById('nameInput');
+const saveBtn = document.getElementById('saveBtn');
+const saveStatus = document.getElementById('saveStatus');
+const leaderboardList = document.getElementById('leaderboardList');
+
+function renderLeaderboard(scores) {
+  leaderboardList.innerHTML = '';
+  scores.slice(0, 8).forEach((s) => {
+    const li = document.createElement('li');
+    li.textContent = `${s.name} - ${s.score} (best combo x${s.comboHigh || 1})`;
+    leaderboardList.appendChild(li);
+  });
+}
+
+function refreshLeaderboard() {
+  fetch('scores')
+    .then((r) => r.json())
+    .then((data) => {
+      const list = data.scores || [];
+      renderLeaderboard(list);
+      allTimeHighEl.textContent = list.length ? list[0].score : '-';
+    })
+    .catch(() => {
+      saveStatus.textContent = 'Could not reach the score service.';
+    });
+}
+
+function showOverlay() {
+  finalScoreEl.textContent = `${score}`;
+  finalComboEl.textContent = `x${comboHigh}`;
+  saveStatus.textContent = '';
+  saveBtn.disabled = false;
+  nameInput.value = '';
+  overlay.style.display = 'flex';
+  refreshLeaderboard();
+  nameInput.focus();
+}
+
+function hideOverlay() {
+  overlay.style.display = 'none';
+}
+
+scoreForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const name = nameInput.value.trim();
+  if (!name) {
+    saveStatus.textContent = 'Enter a name first.';
+    return;
+  }
+  saveBtn.disabled = true;
+  saveStatus.textContent = 'Saving...';
+  fetch('scores', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, score, comboHigh }),
+  })
+    .then((r) => {
+      if (!r.ok) return r.json().then((e) => Promise.reject(e.error || 'save failed'));
+      return r.json();
+    })
+    .then((data) => {
+      saveStatus.textContent = `Saved! Rank #${data.rank}.`;
+      allTimeHighEl.textContent = data.highScore;
+      renderLeaderboard(data.scores || []);
+    })
+    .catch((err) => {
+      saveStatus.textContent = `Could not save: ${err}. Try again.`;
+      saveBtn.disabled = false;
+    });
+});
+</script>
+</body>
+</html>
